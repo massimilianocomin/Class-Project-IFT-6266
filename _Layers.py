@@ -109,15 +109,18 @@ class ConvLayer:
     """
     Convolutional + Maxpooling layer class.
     # Arguments :
-        : inputs : Matrix :
+        : inputs : 4D tensor : Shape must be (batch size, channels, height, width)
 
-        : filter_shape : tuple :
+        : filter_shape : 4-tuple : Must be (#current FM, #previous FM, kernel height, kernel width)
 
-        : poolsize : tuple :
+        : poolsize : tuple : Keep this small (default)
 
         : activation : string : Activation function (None,sigmoid,tanh,relu,softmax)
 
-    # Returns :
+    # Attributes :
+        : params : list : List of all the parameters of the layer
+
+        : output : ndarray or T.tensor : Layer output : size = 
     """
     c = 0
     def __init__(self,inputs,filter_shape,poolsize=(2,2),activation='relu',alpha=.02):
@@ -162,6 +165,7 @@ class RecurrentLayer:
         : output : ndarray or T.tensor : Layer's output : size = hdim
 
     # Functions :
+        : __step__ : Updates cell state
     """
     c = 0
     def __init__(self,inputs,channels,hdim,truncate=-1,activation='tanh'):
@@ -172,20 +176,20 @@ class RecurrentLayer:
         c = RecurrentLayer.c
 
         x = np.sqrt(1. / (channels+hdim))
-        y = np.sqrt(1./hdim)
+        y = np.sqrt(1. / hdim)
 
         w = rng.uniform(-x, x, (channels,hdim)).astype(theano.config.floatX)
-        v = rng.uniform(-y,y,size=(hdim,hdim)).astype(theano.config.floatX)
+        v = rng.uniform(-y, y, (hdim,hdim)).astype(theano.config.floatX)
 
-        h0 = theano.shared(np.zeros((hdim),dtype=theano.config.floatX))
-        b = np.zeros(hdim,dtype=theano.config.floatX)
+        h0 = theano.shared(np.zeros((hdim), dtype=theano.config.floatX),'h0')
+        b = np.zeros(hdim, dtype=theano.config.floatX)
 
         self.W = theano.shared(w,'W'+str(c))
         self.V = theano.shared(v,'V'+str(c))
         self.B = theano.shared(b,'B'+str(c))
         self.params = [self.W,self.V,self.B]
 
-        H, _ = theano.scan(self._step,
+        H, _ = theano.scan(self.__step__,
                            sequences=inputs,
                            non_sequences=self.params,
                            outputs_info=[T.repeat(h0[None, :],inputs.shape[1], axis=0)],
@@ -194,10 +198,7 @@ class RecurrentLayer:
 
         self.output = Tool.functions[activation](H[-1])
 
-    def _step(self, x, h_prev, W, V, B):
-        """
-        Updates cell state.
-        """
+    def __step__(self, x, h_prev, W, V, B):
         return T.tanh(T.dot(x,W) + T.dot(h_prev,V) + B)
 
 class LSTMLayer:
@@ -218,6 +219,7 @@ class LSTMLayer:
         : output : ndarray or T.tensor : Layer's output : size = hdim
 
     # Functions :
+        : __step__ : Updates cell state
     """
     c = 0
     def __init__(self,inputs,channels,hdim,truncate=-1,activation='tanh'):
@@ -228,45 +230,49 @@ class LSTMLayer:
         c = LSTMLayer.c
 
         x = np.sqrt(1. / (channels+hdim))
-        y = np.sqrt(1./hdim)
+        y = np.sqrt(1. / hdim)
 
-        keys = ['i','f','c','o'] # Input, Forget, Cell, Output
+        self.V = rng.uniform(-y, y, (hdim,hdim)).astype(theano.config.floatX)
+        self.V = theano.shared(self.V,'V'+str(c))
+
         self.W, self.U, self.B = {},{},{}
 
-        for i in keys:
-            self.W[i] = rng.uniform(-x, x, (channels,hdim)).astype(theano.config.floatX)
-            self.W[i] = theano.shared(self.W[i],'W'+str(i)+str(c))
+        for k in ['i','f','c','o']: # Input, Forget, Cell, Output
+            self.W[k] = rng.uniform(-x, x, (channels,hdim)).astype(theano.config.floatX)
+            self.W[k] = theano.shared(self.W[k],'W'+str(k)+str(c))
 
-            self.U[i] = rng.uniform(-y,y,size=(hdim,hdim)).astype(theano.config.floatX)
-            self.U[i] = theano.shared(self.W[i],'U'+str(i)+str(c))
+            self.U[k] = rng.uniform(-y, y, (hdim,hdim)).astype(theano.config.floatX)
+            self.U[k] = theano.shared(self.U[k],'U'+str(k)+str(c))
 
-            self.B[i] = np.zeros(hdim,dtype=theano.config.floatX)
-            self.B[i] = theano.shared(self.W[i],'B'+str(i)+str(c))
+            self.B[k] = np.zeros(hdim, dtype=theano.config.floatX)
+            self.B[k] = theano.shared(self.B[k],'B'+str(k)+str(c))
 
-        h0 = theano.shared(np.zeros((hdim),dtype=theano.config.floatX))
-        self.V = 'Not implemented'
+        h0 = theano.shared(np.zeros((hdim),dtype=theano.config.floatX),'h0')
+        c0 = theano.shared(np.zeros((hdim),dtype=theano.config.floatX),'c0')
 
-#        self.params = list(self.W.values()) + list(self.U.values()) + list(self.B.values()) + list(self.V)
-        self.params = [self.W,self.U,self.V,self.B]
+        val = lambda x : [x[k] for k in ['i','f','c','o']] #list(x.values())
+        self.params = val(self.W) + val(self.U) + val(self.B)
 
-        H, _ = theano.scan(self._step,
+        [H,C], _ = theano.scan(self.__step__,
                            sequences=inputs,
                            non_sequences=self.params,
-                           outputs_info=[T.repeat(h0[None, :],inputs.shape[1], axis=0)],
+                           outputs_info=[T.repeat(h0[None, :],inputs.shape[1], axis=0),
+                                         T.repeat(c0[None, :], inputs.shape[1], axis=0)],
                            truncate_gradient=truncate,
                            strict=True)
 
         self.output = Tool.functions[activation](H[-1])
 
-    def _step(self, xt, ht_prev, c_prev, W, U, V, B):
+    def __step__(self, xt, h_prev, c_prev, *yolo):
+        # Not taking the parameters from scan but from self (Should not make a difference)
 
-        i = T.nnet.sigmoid(T.dot(W['i'],xt) + T.dot(U['i'],ht_prev) + B['i']) # Input gate
-        f = T.nnet.sigmoid(T.dot(W['f'],xt) + T.dot(U['f'],ht_prev) + B['f']) # Forget gate
-        c = T.tanh(T.dot(W['c'],xt) + T.dot(U['c'],ht_prev) + B['c']) # Intermediary state
-        c = i * c + f * c_prev # Cell state !
-        o = T.nnet.sigmoid(T.dot(W['o'],xt) + T.dot(U['o'],ht_prev) + T.dot(V,c) + B['o']) # Output gate
+        i,f,c,o = [T.nnet.sigmoid(T.dot(xt,self.W[k]) + T.dot(h_prev,self.U[k]) + self.B[k])
+                    for k in ['i','f','c','o']]
 
-        return o * T.tanh(c) # Final output
+        c = i * c + f * c_prev
+        h = o * T.tanh(c)
+        
+        return h,c
 
 class Dropout:
     """
@@ -274,7 +280,7 @@ class Dropout:
     # Arguments :
         : weight : ndarray or T.tensor : The weights we want to drop out
 
-        : phase : string ('train','test' or 'valid') : Train or Valid phase ?
+        : phase : string ('train','test' or 'valid')
 
         : drop : float32 : Proportion to dropout from the weight
 
@@ -285,19 +291,18 @@ class Dropout:
         assert phase in ['train','test','valid']
         self.drop = drop
         self.srng = RandomStreams(rng.randint(2**31))
-        self.output = self._drop(weight) if phase=='train' else self._scale(weight)
+        self.output = self.__drop__(weight) if phase=='train' else self.__scale__(weight)
 
-    def _drop(self, weight):
+    def __drop__(self, weight):
         """
         # Returns: Dropped out matrix with binomial probability
         """
         mask = self.srng.binomial(n=1, p=1-self.drop, size=weight.shape, dtype=theano.config.floatX)
         return T.cast(weight * mask, theano.config.floatX)
 
-    def _scale(self, weight):
+    def __scale__(self, weight):
         """
         # Returns: Scaled matrix
         """
         return (1 - self.drop) * T.cast(weight, theano.config.floatX)
-
 
