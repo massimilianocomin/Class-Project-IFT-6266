@@ -19,23 +19,36 @@ class ImageTools:
         self.path = '/Network/Servers/seguin.pmc.umontreal.ca/Users/mcomin/inpainting' if path is None else path
 
 
-    def load(self):
+    def load(self,n=None):
+        
+        m = None if n is None else 2*n
         
         print('Loading COCO dataset...')
-        train = map(Image.open, glob(self.path+'/train'+'/*.jpg'))
-        valid = map(Image.open, glob(self.path+'/valid'+'/*.jpg'))
-        train_crop = map(Image.open, glob(self.path+'/train_crop'+'/*.jpg'))
-        valid_crop = map(Image.open, glob(self.path+'/valid_crop'+'/*.jpg'))
+        trainlist = glob.glob(self.path+'/train'+'/*.jpg')
+        validlist = glob.glob(self.path+'/valid'+'/*.jpg')
+        traincroplist = glob.glob(self.path+'/train_crop'+'/*.jpg')
+        validcroplist = glob.glob(self.path+'/valid_crop'+'/*.jpg')
         
-        train = np.array(train).transpose(2,0,1)
-        valid = np.array(valid).transpose(2,0,1)
-        train_crop = np.array(train_crop).transpose(2,0,1)
-        valid_crop = np.array(valid_crop).transpose(2,0,1)
+        train = [np.array(Image.open(fname)) for fname in trainlist[0:m]]
+        train = np.array([x for x in train if x.shape == (64,64,3)])
+        train = train[0:n]
+
+        valid = [np.array(Image.open(fname)) for fname in validlist[0:m]]
+        valid = np.array([x for x in valid if x.shape == (64,64,3)])
+        valid = valid[0:n]
+
+        train_crop = [np.array(Image.open(fname)) for fname in traincroplist[0:m]]
+        train_crop = np.array([x for x in train_crop if x.shape == (64,64,3)])
+        train_crop = train_crop[0:n]
+
+        valid_crop = [np.array(Image.open(fname)) for fname in validcroplist[0:m]]
+        valid_crop = np.array([x for x in valid_crop if x.shape == (64,64,3)])
+        valid_crop = valid_crop[0:n]
         
-        train = train.reshape(train.shape[0],3,64,64)
-        valid = valid.reshape(valid.shape[0],3,64,64)
-        train_crop = train_crop.reshape(train_crop.shape[0],3,64,64)
-        valid_crop = valid_crop.reshape(valid_crop.shape[0],3,64,64)
+        train = train.transpose(0,3,1,2)
+        valid = valid.transpose(0,3,1,2)
+        train_crop = train_crop.transpose(0,3,1,2)
+        valid_crop = valid_crop.transpose(0,3,1,2)
         
         trainset = train,train_crop
         validset = valid,valid_crop
@@ -46,7 +59,6 @@ class ImageTools:
     def plot(self,inp):
 
         image = np.copy(inp)
-        image = image.reshape(3,64,64)
         image = image.transpose(1,2,0)
         plt.imshow(image)
 
