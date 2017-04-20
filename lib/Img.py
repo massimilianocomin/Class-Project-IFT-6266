@@ -54,12 +54,12 @@ class Img:
         print('Loading COCO dataset...')
         
         train = [np.array(Image.open(fname)) for fname in self.trainlist[0:n]]
-        train = np.array([x for x in train if x.shape == (64,64,3)])
+        train = np.array(train)
         train = (train[0:n]/256).astype(theano.config.floatX)
         train = train.transpose(0,3,1,2)
 
         valid = [np.array(Image.open(fname)) for fname in self.validlist[0:n]]
-        valid = np.array([x for x in valid if x.shape == (64,64,3)])
+        valid = np.array(valid)
         valid = (valid[0:n]/256).astype(theano.config.floatX)
         valid = valid.transpose(0,3,1,2)
 
