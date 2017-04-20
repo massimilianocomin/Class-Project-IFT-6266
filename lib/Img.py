@@ -134,10 +134,3 @@ class Img:
         with open('SKIP_NAMES','wb') as file:
             pickle.dump(skipnames,file,-1)
 
-I = Img()
-#for i in range(80000//100):
-#    test = I.load_batch(100,i,mode='train')
-#    if test[0].shape != (100, 3, 64, 64):
-#        print('ERROR 0')
-#    if test[1].shape != (100, 3, 32, 32):
-#        print('ERROR 1')
