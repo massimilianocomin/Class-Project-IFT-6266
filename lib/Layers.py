@@ -13,6 +13,7 @@ import theano
 import theano.tensor as T
 import lasagne.updates as updt
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
+import theano.tensor.nnet.neighbours as neigh
 
 theano.config.floatX = 'float32'
 theano.config.intX = 'int32'
@@ -37,6 +38,15 @@ class Tool:
     relux = lambda x: T.switch(x > 0, x, .02*x)
     softplus = T.nnet.softplus
     
+    fct = {None:lambda x,**args: x,
+                    'sigmoid':T.nnet.sigmoid,
+                    'tanh':T.tanh,
+                    'softmax':T.nnet.softmax,
+                    'relu':T.nnet.relu,
+                    'relux':relux,
+                    'elu' : elu,
+                    'softplus':T.nnet.softplus}
+    
     conv = T.nnet.conv2d
     pool = T.signal.pool.pool_2d
     upsamp = T.nnet.abstract_conv.bilinear_upsampling
@@ -50,6 +60,8 @@ class Tool:
     rmsprop = updt.rmsprop
     adadelta = updt.adadelta
     adam = updt.adam
+    apply_momentum = updt.apply_momentum
+    apply_nesterov = updt.apply_nesterov_momentum
     
     Cce = lambda p,y : T.mean(T.nnet.categorical_crossentropy(p,y))
     Bce = lambda p,y : T.mean(T.nnet.binary_crossentropy(p,y))
@@ -59,21 +71,55 @@ class Tool:
     L1 = lambda w : T.sum(T.sqrt(T.pow(w,2)))
     L2 = lambda w : T.sum(T.pow(w,2))
 
-    @staticmethod
-    def Mse(x,y,mode=4):
-        dims = np.arange(1,mode)
-        return T.mean(T.sum(T.pow(x - y,2),axis=dims)) 
-    
-    fct = {None:lambda x,**args: x,
-                    'sigmoid':T.nnet.sigmoid,
-                    'tanh':T.tanh,
-                    'softmax':T.nnet.softmax,
-                    'relu':T.nnet.relu,
-                    'relux':relux,
-                    'elu' : elu,
-                    'softplus':T.nnet.softplus}
-
 ########################### Methods ##############################
+
+    @staticmethod
+    def Mse(x,y,dims=4):
+        mod = np.arange(1,dims)
+        return T.mean(T.sum(T.pow(x - y,2),axis=mod)) 
+    
+    @staticmethod
+    def Mae(x,y,dims=4,eps=1e-7):
+        mod = np.arange(1,dims)
+        return T.mean(T.sum(T.sqrt(T.pow(x - y,2) + eps),axis=mod))
+
+    @staticmethod
+    def DSSIM(p, y, eps = 1e-7):
+        # Taken/Modified from https://github.com/fchollet/keras/issues/4292
+        # Nan issue : T.maximum(x, eps) 
+        
+        y_patch = neigh.images2neibs(y, [4,4], mode='ignore_borders')
+        p_patch = neigh.images2neibs(p, [4,4], mode='ignore_borders')
+        
+        y_mean = T.mean(y_patch, axis=-1)
+        p_mean = T.mean(p_patch, axis=-1)
+        
+        y_var = T.var(y_patch, axis=-1, corrected=True)
+        p_var = T.var(p_patch, axis=-1, corrected=True)
+
+        y_std = T.sqrt(T.maximum(y_var,eps))
+        p_std = T.sqrt(T.maximum(p_var,eps))
+        
+        c1 = 0.01 ** 2
+        c2 = 0.02 ** 2
+        
+        num = (2 * y_mean * p_mean + c1)*(2 * y_std * p_std + c2) 
+        denom = (T.pow(y_mean,2) + T.pow(p_mean,2) + c1)*(y_var + p_var + c2)
+        
+        ssim = num/T.maximum(denom,eps)
+        
+        return T.mean(1.0 - ssim)
+
+    @staticmethod
+    def rmsprop_momentum(loss,params,eta=1e-3,alpha=0.9,**kwargs):
+        rms = updt.rmsprop(loss, params, learning_rate = eta, **kwargs)
+        return updt.apply_momentum(rms, params, momentum = alpha)
+    
+    @staticmethod
+    def rmsprop_nesterov(loss,params,eta=1e-3,alpha=0.9,**kwargs):
+        rms = updt.rmsprop(loss, params, learning_rate = eta, **kwargs)
+        return updt.apply_nesterov_momentum(rms, params, momentum = alpha)
+
     @staticmethod
     def getpath():
         if os.environ['LOC'] == 'local':
@@ -111,6 +157,32 @@ class Tool:
 
 #*****************************************************************************#
 #*****************************************************************************#
+
+class InputLayer:
+    def __init__(self,inputs):
+        self.output = inputs
+        self.params = []
+        
+class ReshapeLayer:
+    def __init__(self,inputs,shape):
+        inputs = inputs.output
+        self.output = inputs.reshape(shape)
+        self.params = []
+
+class SumLayer:
+    c=0
+    def __init__(self,input1,input2,activation=None,ratio=None):
+        input1 = input1.output
+        input2 = input2.output
+        
+        SumLayer.c += 1
+        c = SumLayer.c
+        
+        alpha = rng.uniform(0.,1.,size=(2,)).astype(theano.config.floatX)
+        A = theano.shared(alpha[0],'A'+str(c)) if ratio is None else ratio
+
+        self.output = A*input1 + (1. - A)*input2
+        self.params = [A] if ratio is None else []
 
 class DenseLayer:
     """
@@ -472,69 +544,54 @@ class BatchNorm:
     --------------------------------
     """
     c=0
-    def __init__(self,inputs,channels,activation,mode='full',bmean=None,bstd=None):
+    def __init__(self,inputs,channels,activation,dims=2,batch=None):
         
-        assert mode in ['full','convolution',None]
+        assert dims in [2,4,None]
         
         BatchNorm.c += 1
         c = BatchNorm.c
         
         inputs = inputs.output
         
-        if mode == 'full':
+        
+        if dims == 2:
             
             g = np.ones((channels,), dtype=theano.config.floatX)
             b = np.zeroes((channels,), dtype=theano.config.floatX)
             self.G = theano.shared(g,'G_bn'+str(c))
             self.B = theano.shared(b,'B_bn'+str(c))
             
-            mean = T.mean(inputs,axis=0) if bmean is None else bmean
-            std = T.std(inputs,axis=0) if bmean is None else bstd
+            mean = T.mean(inputs,axis=0) if batch is None else T.mean(batch,axis=0)
+            std = T.std(inputs,axis=0) if batch is None else T.std(batch,axis=0)
 
             self.params = [self.G,self.B]
             self.stats = [mean,std]
             A = self.G * (inputs - mean) / std + self.B
             self.output = Tool.fct[activation](A)
 
-        elif mode == 'convolution':
+        elif dims == 4:
             
             g = np.ones((channels,), dtype=theano.config.floatX)
             b = np.zeros((channels,), dtype=theano.config.floatX)
             self.G = theano.shared(g,'G_bn'+str(c))
             self.B = theano.shared(b,'B_bn'+str(c))
             
-            mean = T.mean(inputs,axis=(0,2,3)).dimshuffle('x',0,'x','x') if bmean is None else bmean
-            std = T.std(inputs,axis=(0,2,3)).dimshuffle('x',0,'x','x') if bmean is None else bstd
+            if batch is None:
+                mean = T.mean(inputs,axis=(0,2,3)).dimshuffle('x',0,'x','x')
+                std = T.std(inputs,axis=(0,2,3)).dimshuffle('x',0,'x','x') 
+            else :
+                mean = T.mean(batch,axis=(0,2,3)).dimshuffle('x',0,'x','x')
+                std = T.std(batch,axis=(0,2,3)).dimshuffle('x',0,'x','x')
 
             self.params = [self.G,self.B]
             self.stats = [mean,std]
             A =  self.G.dimshuffle('x',0,'x','x') * (inputs - mean) / std + self.B.dimshuffle('x',0,'x','x')
             self.output = Tool.fct[activation](A)
 
-        elif mode == None:
+        elif dims == None:
+            mean,std = None,None
             self.output = Tool.fct[activation](inputs)
             self.params = []
-
-
-class InputLayer:
-    def __init__(self,inputs):
-        self.output = inputs
-        self.params = []
         
-class ReshapeLayer:
-    def __init__(self,inputs,shape):
-        inputs = inputs.output
-        self.output = inputs.reshape(shape)
-        self.params = []
-
-
-
-
-
-
-
-
-
-
-
-
+        self.mean = mean
+        self.std = std
