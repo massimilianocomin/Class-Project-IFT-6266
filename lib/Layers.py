@@ -28,7 +28,7 @@ class Tool:
         Classes : Timers, ...
     """
 
-########################## Functions #############################
+########################## Functions ############################
 
     tanh = T.tanh
     sigmoid = T.nnet.sigmoid
