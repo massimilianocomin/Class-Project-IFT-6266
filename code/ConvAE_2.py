@@ -29,7 +29,7 @@ theano.config.intX = 'int32'
 
 class Model:
     """
-    Implementation of a ConvAE.
+    Implementation of a ConvAE
     
     *** During Validation, Rebuild Model ***
     BatchNorm Layers with train_batch's mean and std
