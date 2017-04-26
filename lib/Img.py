@@ -16,8 +16,6 @@ if os.environ['LOC'] == 'local':
 elif os.environ['LOC'] == 'hades':
     path = '/home2/ift6ed13/data'
     libpath = '/home2/ift6ed13/lib'
-    import matplotlib
-    matplotlib.use('Agg')
 else:
     sys.exit('Environment variable LOC not found. Verify .bash_profile.')
     
@@ -44,49 +42,47 @@ class Img:
         
         self.trainlist = [x for x in trainlist if x not in self.IMG_TO_SKIP]
         self.validlist = [x for x in validlist if x not in self.IMG_TO_SKIP]
+        
+        self.namelist = {'train':self.trainlist,'valid':self.validlist}
 
 
-    def load(self,n=None):
+    def load(self,n=None,shared=False,mode='train'):
         """
         Loads the whole dataset, or the first n examples.
         """
         
         print('Loading COCO dataset...')
         
-        train = [np.array(Image.open(fname)) for fname in self.trainlist[0:n]]
-        train = np.array(train)
-        train = (train[0:n]/256).astype(theano.config.floatX)
-        train = train.transpose(0,3,1,2)
+        names = self.namelist[mode]
+        
+        dataset = [np.array(Image.open(fname)) for fname in names[0:n]]
+        dataset = np.array(dataset)
+        dataset = (dataset[0:n]/256).astype(theano.config.floatX)
+        dataset = dataset.transpose(0,3,1,2)
 
-        valid = [np.array(Image.open(fname)) for fname in self.validlist[0:n]]
-        valid = np.array(valid)
-        valid = (valid[0:n]/256).astype(theano.config.floatX)
-        valid = valid.transpose(0,3,1,2)
-
-        train_crop = np.copy(train)
-        train_crop[:,:,16:48,16:48] = 0
-        valid_crop = np.copy(valid)
-        valid_crop[:,:,16:48,16:48] = 0
-
+        data_crop = np.copy(dataset)
+        data_crop[:,:,16:48,16:48] = 0
+        data_center = np.copy(dataset)
+        data_center = data_center[:,:,16:48,16:48]
+        
+        if shared:
+            data_crop = theano.tensor._shared(data_crop,borrow=True)
+            data_center = theano.tensor._shared(data_center,borrow=True)
+            
         print('Dataset loaded.')
 
-        return train_crop, train, valid_crop, valid
+        return data_crop, data_center
 
 
     def load_batch(self,batchsize,i,mode):
         """
         Loads successive minibatches of the dataset.
         """
-        
-        if mode == 'train':
-            batch_list = self.trainlist[i*batchsize:(i+1)*batchsize]
-        elif mode == 'valid':
-            batch_list = self.validlist[i*batchsize:(i+1)*batchsize]
-        else:
-            sys.exit('Img.load_batch Error: Please select a valid mode.')
+        names = self.namelist[mode]
+        batch_list = names[i*batchsize:(i+1)*batchsize]
             
         batch = [np.array(Image.open(fname)) for fname in batch_list]
-        batch = np.array(batch[0:batchsize],dtype=theano.config.floatX)/256.
+        batch = np.array(batch,dtype=theano.config.floatX)/256.
         batch = batch.transpose(0,3,1,2)
 
         batch_crop = np.copy(batch)
@@ -104,12 +100,10 @@ class Img:
         if imgpath:
             plt.savefig(imgpath+'.png')
     
-    def save(self,image,imgpath):
+    def save(self,img, path):
         
-        image = image.transpose(1,2,0)
-        
-        with open(imgpath,'wb') as file:
-            pickle.dump(image,file, 2)
+        with open(path,'wb') as f:
+            pickle.dump(img,f)
 
     def _DETECT_GRAYSCALE_IMG(self):
         
@@ -133,4 +127,3 @@ class Img:
         
         with open('SKIP_NAMES','wb') as file:
             pickle.dump(skipnames,file,-1)
-
