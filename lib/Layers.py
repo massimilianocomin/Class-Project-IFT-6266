@@ -62,6 +62,7 @@ class Tool:
     adam = updt.adam
     apply_momentum = updt.apply_momentum
     apply_nesterov = updt.apply_nesterov_momentum
+    norm_constraint = updt.norm_constraint
     
     Cce = lambda p,y : T.mean(T.nnet.categorical_crossentropy(p,y))
     Bce = lambda p,y : T.mean(T.nnet.binary_crossentropy(p,y))
@@ -128,11 +129,23 @@ class Tool:
             return '/home2/ift6ed13'
 
     @staticmethod
-    def setinit(fan_in, fan_out, act, size=None):
+    def setinit(fan_in, fan_out, act, size=None, orthogonal=False):
+        
         if not size:
             size = (fan_in,fan_out)
+            
         x = np.sqrt(6. / (fan_in + fan_out)) * (4. if act == 'sigmoid' else 1.)
-        return rng.uniform(-x,x,size=size).astype(theano.config.floatX)
+        
+        if orthogonal :
+            flat_shape = (size[0], np.prod(size[1:]))
+            gauss = rng.normal(0.,1.,flat_shape)
+            u, _, v = np.linalg.svd(gauss, full_matrices=False)
+            q = u if u.shape == flat_shape else v
+            q = q.reshape(size)
+            return q[:size[0], :size[1]].astype(theano.config.floatX)
+            
+        else :
+            return rng.uniform(-x,x,size=size).astype(theano.config.floatX)
 
     @staticmethod
     def setseed():
@@ -183,6 +196,27 @@ class SumLayer:
 
         self.output = A*input1 + (1. - A)*input2
         self.params = [A] if ratio is None else []
+
+class JoinLayer:
+    def __init__(self,*args,mean=False,axis=0):
+        
+        inputs = tuple(k.output for k in args)
+        
+        if mean:
+            self.output = T.mean(T.concatenate(inputs,axis=axis))
+        else:
+            self.output = T.concatenate(inputs,axis=axis)
+
+        self.params = []
+
+class OperatorLayer:
+    def __init__(self,inputs,function,*args,**kwargs):
+        
+        inputs = inputs.output
+        self.output = function(inputs,*args,**kwargs)
+        self.params = []
+
+
 
 class DenseLayer:
     """
@@ -356,8 +390,11 @@ class TConvLayer:
     
             self.W = theano.shared(w,'W_dconv'+str(c))
             self.B = theano.shared(b,'B_dconv'+str(c))
-        
-            upsampled = Tool.upsamp(inputs, poolsize[0], batch, nkernels) # batch =  inputs.shape[0]
+            
+            if poolsize[0] == 1:
+                upsampled = inputs
+            else:
+                upsampled = Tool.upsamp(inputs, poolsize[0], batch, nkernels) # batch =  inputs.shape[0]
             deconved = Tool.deconv(upsampled, self.W, inp_shape, border_mode=pad, subsample=stride)
             
             deconved += self.B.dimshuffle('x',0,1,2)
@@ -380,6 +417,8 @@ class RecurrentLayer:
 
         : activation : string : Activation function (None,sigmoid,tanh,relu,softmax)
 
+        : take_last : Returns only last step if set to True
+
     # Attributes :
         : params : list : List of all the parameters of the layer
 
@@ -389,7 +428,7 @@ class RecurrentLayer:
         : __step__ : Updates cell state
     """
     c = 0
-    def __init__(self,inputs,channels,hdim,truncate=-1,activation='tanh'):
+    def __init__(self,inputs,channels,hdim,truncate=-1,activation='tanh',take_last=False):
 
         assert activation in Tool.fct.keys()
 
@@ -398,17 +437,18 @@ class RecurrentLayer:
         
         inputs = inputs.output
         
-        w = Tool.setinit(channels, hdim, activation)
-        v = Tool.setinit(hdim, hdim, activation)
+        w = Tool.setinit(channels, hdim, activation,orthogonal=True)
+        v = Tool.setinit(hdim, hdim, activation,orthogonal=True)
 
         h0 = theano.shared(np.zeros((hdim), dtype=theano.config.floatX),'h0')
         b = np.zeros(hdim, dtype=theano.config.floatX)
 
-        W = theano.shared(w,'Wrec'+str(c))
-        V = theano.shared(v,'Vrec'+str(c))
-        B = theano.shared(b,'Brec'+str(c))
+        W = theano.shared(w,'W_rec'+str(c))
+        V = theano.shared(v,'V_rec'+str(c))
+        B = theano.shared(b,'B_rec'+str(c))
         self.params = [W,V,B]
         self.weights = [W,V]
+        
 
         H, _ = theano.scan(self.__step__,
                            sequences=inputs,
@@ -417,7 +457,7 @@ class RecurrentLayer:
                            truncate_gradient=truncate,
                            strict=True)
 
-        self.output = Tool.fct[activation](H[-1])
+        self.output = Tool.fct[activation](H[-1] if take_last else H)
 
     def __step__(self, x, h_prev, W, V, B):
         return T.tanh(T.dot(x,W) + T.dot(h_prev,V) + B)
@@ -429,6 +469,8 @@ class LSTMLayer:
     LSTM layer class.
     -----------------
     
+    Note : There is no explicit connection between the output gate and the cell state.
+    
     # Arguments :
         : inputs : ndarray or T.tensor : Previous layer
     
@@ -437,17 +479,19 @@ class LSTMLayer:
         : hdim : int : Dimension of hidden layer
     
         : activation : string : Activation function (None,sigmoid,tanh,relu,softmax)
-    
+
+        : take_last : Returns only last step if set to True
+        
     # Attributes :
         : params : list : List of all the parameters of the layer
     
-        : output : ndarray or T.tensor : size = hdim
+        : output : ndarray or T.tensor : size = (seq_length, hdim)
     
     # Functions :
         : __step__ : Updates cell state
     """
     c = 0
-    def __init__(self,inputs,channels,hdim,truncate=-1,activation='tanh'):
+    def __init__(self,inputs,channels,hdim,truncate=-1,activation='tanh',take_last=False):
 
         assert activation in Tool.fct.keys()
 
@@ -455,51 +499,49 @@ class LSTMLayer:
         c = LSTMLayer.c
         
         inputs = inputs.output
-        
-        self.V = Tool.setinit(hdim, hdim, activation)
-        self.V = theano.shared(self.V,'V'+str(c))
 
         self.W, self.U, self.B = {},{},{}
 
         for k in ['i','f','c','o']: # Input, Forget, Cell, Output
-            self.W[k] = Tool.setinit(channels, hdim, activation)
-            self.W[k] = theano.shared(self.W[k],'Wlstm'+str(k)+str(c))
+            self.W[k] = Tool.setinit(channels, hdim, activation,orthogonal=True)
+            self.W[k] = theano.shared(self.W[k],'W_lstm'+str(k)+str(c))
 
-            self.U[k] = Tool.setinit(hdim, hdim, activation)
-            self.U[k] = theano.shared(self.U[k],'Ulstm'+str(k)+str(c))
+            self.U[k] = Tool.setinit(hdim, hdim, activation,orthogonal=True)
+            self.U[k] = theano.shared(self.U[k],'U_lstm'+str(k)+str(c))
 
             self.B[k] = np.zeros(hdim, dtype=theano.config.floatX)
-            self.B[k] = theano.shared(self.B[k],'Blstm'+str(k)+str(c))
+            self.B[k] = theano.shared(self.B[k],'B_lstm'+str(k)+str(c))
 
         h0 = theano.shared(np.zeros((hdim),dtype=theano.config.floatX),'h0')
         c0 = theano.shared(np.zeros((hdim),dtype=theano.config.floatX),'c0')
 
-        val = lambda x : [x[k] for k in ['i','f','c','o']] #list(x.values())
-        self.params = val(self.W) + val(self.U) + val(self.B)
+        val = lambda x : list(x.values())
+
+        self.params = val(self.W) + val(self.U) + val(self.B) 
         self.weights = val(self.W) + val(self.U)
 
         [H,C], _ = theano.scan(self.__step__,
                            sequences=inputs,
-                           non_sequences=self.params,
+                           non_sequences = self.params,
                            outputs_info=[T.repeat(h0[None, :],inputs.shape[1], axis=0),
                                          T.repeat(c0[None, :], inputs.shape[1], axis=0)],
                            truncate_gradient=truncate,
                            strict=True)
 
-        self.output = Tool.fct[activation](H[-1])
-        self.state = C[-1]
+        self.output = Tool.fct[activation](H[-1] if take_last else H) 
+        self.state = C
 
-    def __step__(self, xt, h_prev, c_prev, *yolo):
-        # Not taking the parameters from scan but from self (Should not make a difference)
+    def __step__(self, xt, h_prev, c_prev, *args):
+        
+        W = args[0:4]
+        U = args[4:8]
+        B = args[8:12]
 
-        i,f,c,o = [T.nnet.sigmoid(T.dot(xt,self.W[k]) + T.dot(h_prev,self.U[k]) + self.B[k])
-                    for k in ['i','f','c','o']]
-
+        i,f,c,o = [Tool.sigmoid(T.dot(xt,W[k]) + T.dot(h_prev,U[k]) + B[k]) for k in range(4)]
         c = i * c + f * c_prev
         h = o * T.tanh(c)
         
         return h,c
-
 
 
 class Dropout:
