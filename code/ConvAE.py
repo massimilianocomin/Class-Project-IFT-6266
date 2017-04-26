@@ -30,7 +30,7 @@ theano.config.intX = 'int32'
 
 class Model:
     """
-    Implementation of a ConvAE.
+    Implementation of a ConvAE 
     """
     def __init__(self,bs,n=None):
     
