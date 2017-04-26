@@ -127,3 +127,5 @@ class Img:
         
         with open('SKIP_NAMES','wb') as file:
             pickle.dump(skipnames,file,-1)
+
+           
