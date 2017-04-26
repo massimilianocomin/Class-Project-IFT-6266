@@ -28,62 +28,55 @@ class Caption:
             self.datapath = '/home2/ift6ed13/data'
         elif os.environ['LOC'] == 'local':
             self.datapath = '/Network/Servers/seguin.pmc.umontreal.ca/Users/mcomin/inpainting'
-        
+
         caption_path = self.datapath + '/dict_key_imgID_value_caps_train_and_valid.pkl'
 
         with open(caption_path,'rb') as f :
             self.caption = pickle.load(f)
             self.caption_keys = list(self.caption.keys()) # Name of image
             self.caption_vals = list(self.caption.values()) # 5 captions per image
+
     
     def convert(self,phrase):
         
-        rmv_punct = phrase.translate(str.maketrans('','',string.punctuation))
+        remove_punct = phrase.translate(str.maketrans('','',string.punctuation))
+        return remove_punct.split()
+
+    def cosine_dist(self,x,y):
+        return np.dot(x,y) / (np.linalg.norm(x) * np.linalg.norm(y))
+
+    def build(self):
+
+        print('Training Word2Vec on captions...')
         
-        return rmv_punct.split()
-    
-    def build(self,name):
+        sentences = [self.convert(x) for y in self.caption_vals for x in y]
+        self.model = gensim.models.Word2Vec(sentences, size=200, window=10, workers=4, min_count = 1, iter = 20)
 
-        
-        if name == 'google':
-            
-            print('Loading Google\'s pre-trained model...')
-            
-            path = self.datapath + '/GoogleNews-vectors-negative300.bin.gz'
-            self.model = gensim.models.KeyedVectors.load_word2vec_format(path, binary=True)
-            
-            print('Loaded.')
-            
-        elif name == 'local':
-            
-            print('Training Word2Vec on captions...')
-            
-            sentences = [self.convert(x) for y in self.caption_vals for x in y]
-            self.model = gensim.models.Word2Vec(sentences, size=150, window=5, workers=4, min_count = 1)
-            
-            print('Model built.')
-    
-        else:
-            sys.exit('No such model exists.')
+        print('Model built.')
+
+        # Google: gensim.models.KeyedVectors.load_word2vec_format(self.datapath+'/GoogleNews-vectors-negative300.bin.gz',binary=True)
+
+        with open(self.datapath + '/worddict.pkl','rb') as f:
+            words = pickle.load(f)
+            words = list(words.keys())
 
 
+        print('Creating word dictionary...')
 
-        print('Creating vector dictionary...')
+        self.wordict = OrderedDict({})
 
-        self.caption_vec = OrderedDict({})
-        
-        for i,j in self.caption.items():
+        for i in words:
             try:
-                self.caption_vec[i] = [[self.model[x] for x in self.convert(y)] for y in j]
-            except KeyError:
+                self.wordict[i] = self.model[i]
+            except:
+                print(i)
                 continue
 
         print('Vector word embedding created.')
-        
-    def save(self,filename):
-        with open(os.getcwd()+'/'+filename+'.pkl','wb') as file:
-            pickle.dump(self.caption_vec, file, 2)
     
-    def load(self,filename):
-        with open(os.getcwd()+'/'+filename+'.pkl','rb') as file:
-            self.caption_vec = pickle.load(file)
+    def save(self,filename):
+        with open(os.getcwd()+'/'+filename,'wb') as file:
+            pickle.dump(self.caption_vec, file, 2)
+ 
+    
+    
