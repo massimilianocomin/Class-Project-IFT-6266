@@ -242,7 +242,7 @@ class Model(Loader):
         D[1] = Conv(Drop(D[0]), 3, 32, s = 2) # Out = 32
         D[2] = BN(D[1], 32)
         
-        D[3] = JoinLayer(D[2], D['c5'], axis = 1)
+        D[3] = JoinLayer(D[2], D['c6'], axis = 1)
         
         D[4] = Conv(Drop(D[3]), 64, 96, s = 2) # Out = 16
         D[5] = BN(D[4], 96)
