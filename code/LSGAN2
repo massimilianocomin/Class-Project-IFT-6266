@@ -19,7 +19,7 @@ if os.environ['LOC'] == 'local':
     libpath = '../lib'
     filepath = os.getcwd()
 elif os.environ['LOC'] == 'hades':
-    datapath = '/home2/ift6ed13/data'
+    datapath = 'data'
     libpath = '/home2/ift6ed13/lib'
     filepath = '/home2/ift6ed13/results'
 sys.path.append(libpath)
@@ -44,6 +44,8 @@ class Loader:
         
         with open(libpath+'/SKIP_NAMES','rb') as file:
             self.IMG_TO_SKIP = pickle.load(file)
+
+        self.IMG_TO_SKIP = [k[16:] for k in self.IMG_TO_SKIP]
 
         trainlist = glob.glob(datapath+'/train/*.jpg')
         validlist = glob.glob(datapath+'/valid/*.jpg')
@@ -163,10 +165,10 @@ class Model(Loader):
         self.n = n
         self.trainlist = self.trainlist[0:n]
 
-        self.name = 'LSGAN2'
+        self.name = 'FINAL'
         
-        delta = 0.15 # Part of Image Metrics in Generator Loss
-        teta = 0.4 # Part of SSIM in Image Metric
+        delta = 0.35 # Part of Image Metrics in Generator Loss
+        teta = 0.85 # Part of SSIM in Image Metric
         l_rate = 1e-3 # Learning rate
         m_rate = 0.9 # Momentum parameter
 
@@ -177,26 +179,24 @@ class Model(Loader):
         c = T.tensor3('caption')
         c_fake = T.tensor3('caption_fake')
         s = T.scalar('smooth')
-        
+
         g = self.G(x,z,c)
-        d_real = self.D(y,c)
-        d_gen = self.D(g,c)
-        d_fake = self.D(y,c_fake)
+        d_real = self.D(x,y,c)
+        d_gen = self.D(x,g,c)
+        d_fake = self.D(x,y,c_fake)
         
         one = np.ones(self.bs) 
         zero = np.zeros(self.bs)
-        
+
         # Discriminator Loss : One sided label smoothing (s)
         # Training D to set (real image, wrong caption) as fake.
-        Dcost = Tool.Mse( d_real, s*one, dims=2 )/3.
-        Dcost += Tool.Mse( d_gen, zero, dims=2 )/3. 
-        Dcost += Tool.Mse(d_fake, zero, dims=2)/3. 
+        Dcost = ( Tool.Mse( d_real, s*one, dims=2 ) + Tool.Mse( d_gen, zero, dims=2 ) + 0.15*Tool.Mse(d_fake, zero, dims=2) )/3.
 
         # Generator Cost    
         Gcost = Tool.Mse( d_gen, one, dims=2 )/2. + delta*( (1.-teta)*Tool.Mae(g,y) + teta*Tool.DSSIM(g,y) )
 
-        D_update = Tool.rmsprop_nesterov(Dcost, self.D_params, eta = l_rate, alpha = m_rate, rho=0.8)
-        G_update = Tool.rmsprop_momentum(Gcost, self.G_params, eta = l_rate/10., alpha = m_rate, rho=0.9)
+        D_update = Tool.rmsprop_nesterov(Dcost, self.D_params, eta = l_rate, alpha = m_rate)
+        G_update = Tool.rmsprop_momentum(Gcost, self.G_params, eta = l_rate/10., alpha = m_rate)
 
 
         self.train_D = theano.function([x,y,z,c,c_fake,s], Dcost, updates = D_update)
@@ -205,10 +205,12 @@ class Model(Loader):
         
         print('Computational graph built.')
 
-    def D(self,y,c):
+    def D(self,x,y,c):
         
         D = {}
-        y = y.reshape((self.bs,3,32,32))
+        x = x.reshape((x.shape[0],3,64,64))
+        y = y.reshape((y.shape[0],3,32,32))
+        img = T.set_subtensor(x[:,:,16:48,16:48], y)
         
         # s = 1 : Same size || s = 2 : size/2
         Conv = lambda x,y,z,s : ConvLayer(x, nchan = y, nkernels = z, kernelsize = (3,3),
@@ -225,38 +227,41 @@ class Model(Loader):
 
         D['c0'] = InputLayer(c)
         
-        D['c1'] = LSTMLayer(D['c0'], 200, 100, truncate = 10) # Out = (sentence size, 100)
+        D['c1'] = LSTMLayer(D['c0'], 200, 96, truncate = 10) # Out = (sentence size, 100)
         D['c2'] = OperatorLayer(D['c1'], T.mean, axis = 1) # Mean over time steps (seq length)
         
-        D['c3'] = DenseLayer(D['c2'], 100, 48, activation = 'relux')
-        D['c4'] = ReshapeLayer(D['c3'], (self.bs, 3, 4, 4))
-        
-        D['c5'] = TConvLayer(D['c4'], shape=(8,8), nchan = 48, nkernels = 3, activation = 'sigmoid', **Tconvargs)
-        D['c6'] = ReshapeLayer(D['c5'], (self.bs, 3, 32, 32))
-
+        D['c3'] = ReshapeLayer(D['c2'], (self.bs, 6, 4, 4))
+        D['c4'] = TConvLayer(D['c3'], shape=(8,8), nchan=48, nkernels=6, activation='sigmoid', **Tconvargs)
+        D['c5'] = ReshapeLayer(D['c4'], (self.bs, 3, 32, 32))
+        D['c6'] = Conv(D['c5'], 3, 32, s = 1)
 
         # Model
         
-        D[-1] = InputLayer(y)
-        D[0] = JoinLayer(D[-1], D['c6'],axis=1) # Out = 32
+        D[0] = InputLayer(img)
         
-        D[1] = Conv(Drop(D[0]), 6, 16, s = 2) # Out = 16
-        D[2] = BN(D[1], 16)
+        D[1] = Conv(Drop(D[0]), 3, 32, s = 2) # Out = 32
+        D[2] = BN(D[1], 32)
         
-        D[3] = Conv(Drop(D[2]), 16, 24, s = 2) # Out = 8
-        D[4] = BN(D[3], 24)
-
-        D[5] = Conv(Drop(D[4]), 24, 36, s = 2) # Out = 4
-        D[6] = BN(D[5], 36)
+        D[3] = JoinLayer(D[2], D['c5'], axis = 1)
         
-        D[7] = Conv(Drop(D[6]), 36, 72, s = 2) # Out = 2
-        D[8] = BN(D[7], 72)
+        D[4] = Conv(Drop(D[3]), 64, 96, s = 2) # Out = 16
+        D[5] = BN(D[4], 96)
         
-        D[9] = DenseLayer(D[8], 72*2*2, 1, activation = 'sigmoid') 
+        D[6] = Conv(Drop(D[5]), 96, 128, s = 2) # Out = 8
+        D[7] = BN(D[6], 128)
+        
+        D[8] = Conv(Drop(D[7]), 128, 192, s = 2) # Out = 4
+        D[9] = BN(D[8], 192)
+        
+        D[10] = Conv(Drop(D[9]), 192, 256, s = 2) # Out = 2
+        D[11] = BN(D[10], 256)
+        
+        D[12] = Conv(D[11], 256, 256, s = 1)
+        D[13] = DenseLayer(D[12], 256*2*2, 1, activation = 'sigmoid') 
         
         self.D_params = [x for i in D.keys() for x in D[i].params]
 
-        return D[9].output
+        return D[13].output
 
     def G(self,x,z,c): 
 
@@ -268,49 +273,54 @@ class Model(Loader):
         Conv = lambda x,y,z,s : ConvLayer(x, nchan = y, nkernels = z, kernelsize = (3,3),
                                     activation = None, pad = 1, stride=(s,s))
 
-        BN = lambda x,y : BatchNorm(x, y, activation = 'relu', dims = 4)
+        BN = lambda x,y : BatchNorm(x, y, activation = 'relux', dims = 4)
+
+        Drop = lambda x : Dropout(x, drop = 0.10, train = True)
+        
+        Sum = lambda x,y : SumLayer(x,InputLayer(self.Noise((self.bs,y,32,32))),ratio=0.5)
+
 
         # Captions
         
         Tconvargs = {'kernelsize':(2,2), 'W':None,'B':None, 'poolsize':(1,1),
                     'pad':0, 'stride':(2,2), 'tied':False, 'batch':self.bs}
         
+        # Captions pre process
+
         G['c0'] = InputLayer(c)
         
-        G['c1'] = LSTMLayer(G['c0'], 200, 100, truncate = 10) # Out = (sentence size, 100)
+        G['c1'] = LSTMLayer(G['c0'], 200, 96, truncate = 10) # Out = (sentence size, 100)
         G['c2'] = OperatorLayer(G['c1'], T.mean, axis = 1) # Mean over time steps (seq length)
         
-        G['c3'] = DenseLayer(G['c2'], 100, 48, activation = 'relu') 
-        G['c4'] = ReshapeLayer(G['c3'],(self.bs, 3, 4, 4))
+        G['c3'] = ReshapeLayer(G['c2'], (self.bs, 6, 4, 4))
+        G['c4'] = TConvLayer(G['c3'], shape=(8,8), nchan=48, nkernels=6, activation='sigmoid', **Tconvargs)
         
-        G['c5'] = TConvLayer(G['c4'], shape = (8,8), nchan = 48, nkernels = 3, activation = 'sigmoid', **Tconvargs) 
-        G['c6'] = ReshapeLayer(G['c5'],(self.bs, 3, 32, 32)) 
-        
-        G['c7'] = Conv(G['c6'], 3, 24, 1)
+        G['c5'] = ReshapeLayer(G['c4'], (self.bs, 3, 32, 32))
+        G['c6'] = Conv(G['c5'], 3, 64, s = 1)
 
 
-        # Base, In = 64
+        # Main branch
 
         G['image'] = InputLayer(x)
         G['noise'] = InputLayer(z)
         
-        G[0] = JoinLayer(G['image'],G['noise'], axis = 1)
+        G[0] = JoinLayer(G['image'],G['noise'],axis = 1)
         
-        G[1] = Conv(G[0], 6, 48, 2) # Out = 32
-        G[2] = BN(G[1], 48)
+        G[1] = Conv(G[0], 6, 64, s = 2)
+        G[2] = BN(G[1], 64)
         
-        G[3] = JoinLayer(G[2], G['c7'], axis = 1) # Out = (bs, 72, 32, 32)
-
-        G[4] = Conv(G[3], 72, 36, 1)
-        G[5] = BN(G[4], 36)
+        G[3] = JoinLayer(G[2], G['c6'], axis = 1) # Out = (bs, 128, 32, 32)
         
-        G[6] = Conv(G[5], 36, 18, 1) 
-        G[7] = BN(G[6], 18)
+        G[4] = Conv(Drop(Sum(G[3], 128)) , 128, 64, s = 1)
+        G[5] = BN(G[4], 64)
         
-        G[8] = Conv(G[7], 18, 9, 1)
-        G[9] = BN(G[8], 9)
+        G[6] = Conv(Drop(Sum(G[5], 64)) , 64, 32, s = 1) 
+        G[7] = BN(G[6], 32)
         
-        G[10] = ConvLayer(G[9], nchan = 9, nkernels = 3, kernelsize = (3,3), activation = 'sigmoid', pad = 1)
+        G[8] = Conv(Drop(Sum(G[7], 32)), 32, 16, s = 1)
+        G[9] = BN(G[8], 16)
+        
+        G[10] = ConvLayer(Drop(Sum(G[9], 16)), nchan=16, nkernels=3, kernelsize=(3,3), activation='sigmoid', pad=1)
 
         self.G_params = [x for i in G.keys() for x in G[i].params]
 
@@ -339,7 +349,7 @@ class Model(Loader):
                     fake_captions = self.build_captions(capt_names)
                     
                     # Random smoothing
-                    s = np.random.normal(0.9,0.05) 
+                    s = np.random.normal(0.85,0.1)
                     
                     # Training !
                     Dloss[i,j] = self.train_D(crop, center, z, captions, fake_captions, s)
