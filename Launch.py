@@ -5,8 +5,8 @@ Created on Wed Mar 29 15:48:32 2017
 
 @author: mcomin
 """
-from ConvAE import *
+from LSGAN import *
 
-M = Model(bs=5,n=100)
+M = Model(bs=50,n=82500)
 
-M.Train(epochs=30)
+M.Train(epochs=20)
